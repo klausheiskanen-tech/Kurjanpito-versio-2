@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Palkkakuitti</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; font-size: 13px; }
+        .navbar { background: #2c3e50; color: white; padding: 15px 30px; display: flex; gap: 20px; align-items: center; }
+        .navbar a { color: white; text-decoration: none; padding: 8px 15px; border-radius: 4px; }
+        .navbar a:hover { background: #34495e; }
+        .toiminnot { max-width: 800px; margin: 20px auto; padding: 0 20px; }
+        .btn { background: #2c3e50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; display: inline-block; margin-right: 10px; }
+        .btn-green { background: #27ae60; }
+        .kuitti { background: white; padding: 30px 40px; max-width: 800px; margin: 0 auto 30px auto; border: 1px solid #ddd; }
+        .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #333; padding-bottom: 15px; margin-bottom: 15px; }
+        .yritys-nimi { font-size: 1.2em; font-weight: bold; }
+        .otsikko { font-size: 1.3em; font-weight: bold; text-align: right; letter-spacing: 1px; }
+        .henkilotiedot { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #ccc; }
+        .henkilo-vasen { font-weight: bold; font-size: 1em; }
+        .tietorivi { display: flex; gap: 5px; padding: 1px 0; }
+        .tietorivi span:first-child { color: #555; min-width: 130px; }
+        .section { margin-bottom: 8px; }
+        .section-title { background: #f0f0f0; color: #333; padding: 4px 8px; font-weight: bold; border-left: 4px solid #333; margin-bottom: 3px; font-size: 12px; letter-spacing: 1px; }
+        .rivi { display: flex; justify-content: space-between; padding: 3px 8px; border-bottom: 1px solid #f0f0f0; }
+        .rivi-bold { display: flex; justify-content: space-between; padding: 5px 8px; font-weight: bold; border-top: 1px solid #333; }
+        .maksetaan { display: flex; justify-content: space-between; padding: 10px 8px; font-weight: bold; font-size: 1.2em; border-top: 2px solid #333; border-bottom: 2px solid #333; margin: 10px 0; }
+        .kum { background: #f9f9f9; padding: 10px; margin-top: 10px; border: 1px solid #eee; }
+        .kum-title { font-weight: bold; color: #333; border-bottom: 1px solid #ddd; padding-bottom: 3px; margin-bottom: 5px; font-size: 12px; letter-spacing: 1px; }
+        @media print {
+            .navbar, .toiminnot { display: none !important; }
+            body { background: white; font-size: 12px; }
+            .kuitti { padding: 20px; margin: 0; border: none; }
+            @page { margin: 1.5cm; }
+        }
+    </style>
+</head>
+<body>
+    <div class="navbar">
+        <strong>📒 Kirjanpito</strong>
+        <a href="/">Etusivu</a>
+        <a href="/uusi_tosite">+ Uusi tosite</a>
+        <a href="/palkka">Palkkalaskelma</a>
+        <a href="/verokortti">Verokortti</a>
+        <a href="/tuloslaskelma">Tuloslaskelma</a>
+        <a href="/tase">Tase</a>
+        <a href="/alv">ALV</a>
+        <a href="/asetukset">Asetukset</a>
+        <a href="/kirjaudu_ulos" style="margin-left: auto;">Kirjaudu ulos</a>
+    </div>
+
+    <div class="toiminnot">
+        <button onclick="window.print()" class="btn btn-green">🖨️ Tulosta</button>
+        <a href="/" class="btn">← Takaisin</a>
+        <form method="POST" action="/tilita_verot/{{ tosite.id }}" style="display:inline;" onsubmit="return confirm('Kirjataanko verot tilitetyiksi OmaVeroon?')">
+            <input type="hidden" name="paivamaara" id="vero_pvm" value="{{ nayta_paivamaara(tosite.paivamaara) }}">
+            <input type="date" id="vero_pvm_input" style="padding:8px; border:1px solid #ccc; border-radius:4px;" 
+                   onchange="document.getElementById('vero_pvm').value = this.value">
+            <button type="submit" class="btn" style="background:#e67e22;">💸 Tilitä verot OmaVeroon</button>
+        </form>
+    </div>
+
+    <div class="kuitti">
+        <!-- Header -->
+        <div class="header">
+            <div>
+                <div class="yritys-nimi">{{ a.yritys_nimi if a and a.yritys_nimi else '' }}</div>
+                <div>{{ a.ytunnus if a and a.ytunnus else '' }}</div>
+                <div>{{ a.osoite if a and a.osoite else '' }}</div>
+                <div>{{ a.postiosoite if a and a.postiosoite else '' }}</div>
+                <div>{{ a.puhelin if a and a.puhelin else '' }}</div>
+            </div>
+            <div style="text-align:right;">
+                <div class="otsikko">PALKKALASKELMA</div>
+                <div>{{ nayta_paivamaara(tosite.paivamaara) }}</div>
+            </div>
+        </div>
+
+        <!-- Henkilötiedot -->
+        <div class="henkilotiedot">
+            <div>
+                <div class="henkilo-vasen">{{ a.tyontekija_nimi if a and a.tyontekija_nimi else '' }}</div>
+                <div>{{ a.tyontekija_osoite if a and a.tyontekija_osoite else '' }}</div>
+                <div>{{ a.tyontekija_postiosoite if a and a.tyontekija_postiosoite else '' }}</div>
+            </div>
+            <div>
+                <div class="tietorivi"><span>Verotuskunta</span><span>{{ a.verotuskunta if a and a.verotuskunta else '' }}</span></div>
+                <div class="tietorivi"><span>Tehtävänimike</span><span>{{ a.nimike if a and a.nimike else '' }}</span></div>
+                <div class="tietorivi"><span>Työsuhde alkoi</span><span>{{ a.tyosuhde_alkoi if a and a.tyosuhde_alkoi else '' }}</span></div>
+                <div class="tietorivi"><span>Perus% / Lisä%</span><span>{{ verokortti.perus_pros if verokortti else '' }} / {{ verokortti.lisa_pros if verokortti else '' }}</span></div>
+                <div class="tietorivi"><span>Tuloraja</span><span>{{ verokortti.tuloraja if verokortti else '' }} €</span></div>
+                <div class="tietorivi"><span>Henkilötunnus</span><span>{{ a.hetu if a and a.hetu else '' }}</span></div>
+                <div class="tietorivi"><span>IBAN</span><span>{{ a.iban if a and a.iban else '' }}</span></div>
+                <div class="tietorivi"><span>BIC</span><span>{{ a.bic if a and a.bic else '' }}</span></div>
+                <div class="tietorivi"><span>Palkkajakso</span><span>{{ tosite.kuvaus | replace("Palkka ", "") }}</span></div>
+            </div>
+        </div>
+
+        <!-- Rahapalkka -->
+        <div class="section">
+            <div class="section-title">RAHAPALKKA</div>
+            <div class="rivi">
+                <span>Kuukausipalkka</span>
+                <span>{{ "%.2f"|format(laskelma.brutto) | replace(".", ",") }} €</span>
+            </div>
+            <div class="rivi-bold">
+                <span>Rahapalkka yhteensä</span>
+                <span>{{ "%.2f"|format(laskelma.brutto) | replace(".", ",") }} €</span>
+            </div>
+        </div>
+
+        <!-- Vähennykset -->
+        <div class="section">
+            <div class="section-title">VÄHENNYKSET</div>
+            <div class="rivi">
+                <span>Ennakonpidätys ({{ verokortti.perus_pros if verokortti else '' }}%)</span>
+                <span>-{{ "%.2f"|format(laskelma.ennakonpidatys) | replace(".", ",") }} €</span>
+            </div>
+            <div class="rivi">
+                <span>Sosiaaliturvamaksu ({{ verokortti.sotumaksu if verokortti else '' }}%)</span>
+                <span>-{{ "%.2f"|format(laskelma.sotumaksu) | replace(".", ",") }} €</span>
+            </div>
+        </div>
+
+        <!-- Maksetaan -->
+        <div class="maksetaan">
+            <span>MAKSETAAN</span>
+            <span>{{ "%.2f"|format(laskelma.netto) | replace(".", ",") }} €</span>
+        </div>
+
+        <!-- Kertymätiedot -->
+        <div class="kum">
+            <div class="kum-title">KERTYMÄTIEDOT VUODEN ALUSTA</div>
+            <div class="rivi">
+                <span>Rahapalkka</span>
+                <span>{{ "%.2f"|format(laskelma.kum_brutto) | replace(".", ",") }} €</span>
+            </div>
+            <div class="rivi">
+                <span>Ennakonpidätys</span>
+                <span>{{ "%.2f"|format(laskelma.kum_ennakonpidatys) | replace(".", ",") }} €</span>
+            </div>
+            <div class="rivi-bold">
+                <span>Palkansaajalle maksettu</span>
+                <span>{{ "%.2f"|format(laskelma.kum_netto) | replace(".", ",") }} €</span>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

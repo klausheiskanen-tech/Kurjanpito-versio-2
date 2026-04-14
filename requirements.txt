@@ -1,0 +1,312 @@
+import sqlite3
+
+def luo_tietokanta():
+    yhteys = sqlite3.connect("kirjanpito.db")
+    kursori = yhteys.cursor()
+    
+    kursori.execute("""
+        CREATE TABLE IF NOT EXISTS tilit (
+            numero TEXT PRIMARY KEY,
+            nimi TEXT NOT NULL,
+            tyyppi TEXT NOT NULL
+        )
+    """)
+
+    kursori.execute("""
+        CREATE TABLE IF NOT EXISTS tositteet (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paivamaara TEXT NOT NULL,
+            kuvaus TEXT NOT NULL
+        )
+    """)
+
+    kursori.execute("""
+        CREATE TABLE IF NOT EXISTS tapahtumat (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tosite_id INTEGER NOT NULL,
+            tili_numero TEXT NOT NULL,
+            debet REAL DEFAULT 0,
+            kredit REAL DEFAULT 0,
+            alv_prosentti REAL DEFAULT 0,
+            alv_koodi TEXT DEFAULT 'ei',
+            FOREIGN KEY (tosite_id) REFERENCES tositteet(id),
+            FOREIGN KEY (tili_numero) REFERENCES tilit(numero)
+        )
+    """)
+
+    maara = kursori.execute("SELECT COUNT(*) FROM tilit").fetchone()[0]
+    
+    if maara == 0:
+        tilit = [
+            ("1201", "Kalusto ja muu irtain", "vastaavaa"),
+            ("1701", "Myyntisaamiset", "vastaavaa"),
+            ("1762", "Verotilisaamiset", "vastaavaa"),
+            ("1819", "Muut menoennakot", "vastaavaa"),
+            ("1910", "Osuuspankki", "vastaavaa"),
+            ("2001", "Osakepääoma", "vastattavaa"),
+            ("2251", "Edellisten tilikausien voitto", "vastattavaa"),
+            ("2871", "Ostovelat", "vastattavaa"),
+            ("292040", "Arvonlisäverovelka", "vastattavaa"),
+            ("2921", "Ennakonpidätysvelka", "vastattavaa"),
+            ("2923", "Sosiaaliturvamaksuvelka", "vastattavaa"),
+            ("3000", "Myynti", "tulo"),
+            ("5010", "Kuukausipalkat", "kulu"),
+            ("5440", "Muut luontoisedut", "kulu"),
+            ("5990", "Luontoisetujen vastatili", "kulu"),
+            ("6100", "YEL-maksut", "kulu"),
+            ("6300", "Sosiaaliturvamaksut", "kulu"),
+            ("6500", "Henkilövakuutusmaksut", "kulu"),
+            ("6870", "Poisto koneista ja kalustosta", "kulu"),
+            ("7050", "Työterveyshuolto", "kulu"),
+            ("7120", "Työvaatteet", "kulu"),
+            ("7230", "Toimitilavuokrat", "kulu"),
+            ("7680", "Atk-laitehankinnat", "kulu"),
+            ("7730", "Kone- ja kalustohuolto", "kulu"),
+            ("7740", "Kone- ja kalustohankinnat", "kulu"),
+            ("7870", "Kilometrikorvaukset", "kulu"),
+            ("8380", "Taloushallintopalvelut", "kulu"),
+            ("8500", "Puhelinkulut", "kulu"),
+            ("8510", "Matkapuhelinkulut", "kulu"),
+            ("8530", "Datasiirto ja internet", "kulu"),
+            ("8560", "Rahaliikenteen kulut", "kulu"),
+            ("8570", "Pyöristyserot", "kulu"),
+            ("8580", "Vastuuvakuutukset", "kulu"),
+            ("8620", "Toimistotarvikkeet", "kulu"),
+            ("9240", "Palautuskorko", "tulo"),
+            ("9490", "Korkokulut ostoveloista", "kulu"),
+            ("9530", "Maksettava yhteisökorko", "kulu"),
+            ("9540", "Verojen viivästysseuraamukset", "kulu"),
+        ]
+        kursori.executemany("INSERT INTO tilit (numero, nimi, tyyppi) VALUES (?, ?, ?)", tilit)
+
+    yhteys.commit()
+    yhteys.close()
+
+def nayta_tilit():
+    yhteys = sqlite3.connect("kirjanpito.db")
+    kursori = yhteys.cursor()
+    print("\n--- TILIKARTTA ---")
+    for rivi in kursori.execute("SELECT numero, nimi, tyyppi FROM tilit ORDER BY numero"):
+        print(f"{rivi[0]:8} {rivi[1]:40} {rivi[2]}")
+    yhteys.close()
+
+def kirjaa_tosite():
+    print("\n--- UUSI TOSITE ---")
+    paivamaara = input("Päivämäärä (esim. 2025-02-01): ")
+    kuvaus = input("Kuvaus: ")
+    kirjaukset = []
+    print("Syötä kirjaukset (tyhjä tilikenttä lopettaa):")
+    while True:
+        tili = input("Tilinumero: ")
+        if tili == "":
+            break
+        debet = input("Debet (0 jos ei): ")
+        kredit = input("Kredit (0 jos ei): ")
+        print("ALV-koodi: myynti / osto / ei")
+        alv_koodi = input("ALV-koodi: ")
+        if alv_koodi in ["myynti", "osto"]:
+            alv_prosentti = input("ALV-prosentti (esim. 25.5): ")
+        else:
+            alv_prosentti = 0
+        kirjaukset.append((tili, float(debet), float(kredit), float(alv_prosentti), alv_koodi))
+
+    summa_debet = sum(k[1] for k in kirjaukset)
+    summa_kredit = sum(k[2] for k in kirjaukset)
+    if round(summa_debet, 2) != round(summa_kredit, 2):
+        print(f"VIRHE! Debet {summa_debet} ei täsmää kreditin {summa_kredit} kanssa!")
+        return
+
+    yhteys = sqlite3.connect("kirjanpito.db")
+    kursori = yhteys.cursor()
+    kursori.execute("INSERT INTO tositteet (paivamaara, kuvaus) VALUES (?, ?)", (paivamaara, kuvaus))
+    tosite_id = kursori.lastrowid
+    for tili, debet, kredit, alv_prosentti, alv_koodi in kirjaukset:
+        kursori.execute("""
+            INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_prosentti, alv_koodi)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (tosite_id, tili, debet, kredit, alv_prosentti, alv_koodi))
+    yhteys.commit()
+    yhteys.close()
+    print(f"Tosite kirjattu! ID: {tosite_id}")
+
+def nayta_paivakirja():
+    yhteys = sqlite3.connect("kirjanpito.db")
+    kursori = yhteys.cursor()
+    print("\n--- PÄIVÄKIRJA ---")
+    tulokset = kursori.execute("""
+        SELECT t.paivamaara, t.kuvaus, ta.tili_numero, ti.nimi, ta.debet, ta.kredit
+        FROM tositteet t
+        JOIN tapahtumat ta ON t.id = ta.tosite_id
+        JOIN tilit ti ON ta.tili_numero = ti.numero
+        ORDER BY t.paivamaara, t.id
+    """).fetchall()
+    for rivi in tulokset:
+        print(f"{rivi[0]}  {rivi[1]:30} {rivi[2]} {rivi[3]:30} D:{rivi[4]:10.2f} K:{rivi[5]:10.2f}")
+    yhteys.close()
+
+def tuloslaskelma():
+    yhteys = sqlite3.connect("kirjanpito.db")
+    kursori = yhteys.cursor()
+    print("\n=== TULOSLASKELMA ===")
+    print(f"{'':45} {'Summa':>12}")
+    print("-" * 60)
+    tulot = kursori.execute("""
+        SELECT ti.numero, ti.nimi, SUM(ta.kredit) - SUM(ta.debet) as summa
+        FROM tilit ti
+        JOIN tapahtumat ta ON ti.numero = ta.tili_numero
+        WHERE ti.tyyppi = 'tulo'
+        GROUP BY ti.numero, ti.nimi
+        ORDER BY ti.numero
+    """).fetchall()
+    print("\nLIIKEVAIHTO")
+    liikevaihto = 0
+    for rivi in tulot:
+        if rivi[0] == "3000":
+            print(f"  {rivi[1]:43} {rivi[2]:>12.2f}")
+            liikevaihto += rivi[2]
+    print(f"{'Liikevaihto yhteensä':45} {liikevaihto:>12.2f}")
+    kulut = kursori.execute("""
+        SELECT ti.numero, ti.nimi, SUM(ta.debet) - SUM(ta.kredit) as summa
+        FROM tilit ti
+        JOIN tapahtumat ta ON ti.numero = ta.tili_numero
+        WHERE ti.tyyppi = 'kulu'
+        GROUP BY ti.numero, ti.nimi
+        ORDER BY ti.numero
+    """).fetchall()
+    print("\nKULUT")
+    kuluyhteensa = 0
+    for rivi in kulut:
+        if rivi[2] != 0:
+            print(f"  {rivi[1]:43} {-rivi[2]:>12.2f}")
+            kuluyhteensa += rivi[2]
+    print(f"{'Kulut yhteensä':45} {-kuluyhteensa:>12.2f}")
+    rahoitus = 0
+    for rivi in tulot:
+        if rivi[0] != "3000":
+            rahoitus += rivi[2]
+    print(f"\n{'Rahoitustuotot':45} {rahoitus:>12.2f}")
+    liikevoitto = liikevaihto - kuluyhteensa + rahoitus
+    print("-" * 60)
+    print(f"{'TILIKAUDEN VOITTO (TAPPIO)':45} {liikevoitto:>12.2f}")
+    yhteys.close()
+
+def tase():
+    yhteys = sqlite3.connect("kirjanpito.db")
+    kursori = yhteys.cursor()
+    print("\n=== TASE ===")
+    print(f"{'':45} {'Summa':>12}")
+    print("-" * 60)
+    print("\nVASTAAVAA")
+    vastaavaa_yhteensa = 0
+    rivit = kursori.execute("""
+        SELECT ti.numero, ti.nimi, SUM(ta.debet) - SUM(ta.kredit) as saldo
+        FROM tilit ti
+        JOIN tapahtumat ta ON ti.numero = ta.tili_numero
+        WHERE ti.tyyppi = 'vastaavaa'
+        GROUP BY ti.numero, ti.nimi
+        ORDER BY ti.numero
+    """).fetchall()
+    for rivi in rivit:
+        if rivi[2] != 0:
+            print(f"  {rivi[1]:43} {rivi[2]:>12.2f}")
+            vastaavaa_yhteensa += rivi[2]
+    print(f"{'Vastaavaa yhteensä':45} {vastaavaa_yhteensa:>12.2f}")
+    print("\nVASTATTAVAA")
+    vastattavaa_yhteensa = 0
+    rivit = kursori.execute("""
+        SELECT ti.numero, ti.nimi, SUM(ta.kredit) - SUM(ta.debet) as saldo
+        FROM tilit ti
+        JOIN tapahtumat ta ON ti.numero = ta.tili_numero
+        WHERE ti.tyyppi = 'vastattavaa'
+        GROUP BY ti.numero, ti.nimi
+        ORDER BY ti.numero
+    """).fetchall()
+    for rivi in rivit:
+        if rivi[2] != 0:
+            print(f"  {rivi[1]:43} {rivi[2]:>12.2f}")
+            vastattavaa_yhteensa += rivi[2]
+    tulos = kursori.execute("""
+        SELECT SUM(ta.kredit) - SUM(ta.debet)
+        FROM tilit ti
+        JOIN tapahtumat ta ON ti.numero = ta.tili_numero
+        WHERE ti.tyyppi = 'tulo'
+    """).fetchone()[0] or 0
+    kulut = kursori.execute("""
+        SELECT SUM(ta.debet) - SUM(ta.kredit)
+        FROM tilit ti
+        JOIN tapahtumat ta ON ti.numero = ta.tili_numero
+        WHERE ti.tyyppi = 'kulu'
+    """).fetchone()[0] or 0
+    tilikauden_tulos = tulos - kulut
+    print(f"  {'Tilikauden voitto (tappio)':43} {tilikauden_tulos:>12.2f}")
+    vastattavaa_yhteensa += tilikauden_tulos
+    print(f"{'Vastattavaa yhteensä':45} {vastattavaa_yhteensa:>12.2f}")
+    print("-" * 60)
+    if round(vastaavaa_yhteensa, 2) == round(vastattavaa_yhteensa, 2):
+        print("✅ Tase täsmää!")
+    else:
+        print(f"⚠️  Tase EI täsmää! Ero: {vastaavaa_yhteensa - vastattavaa_yhteensa:.2f}")
+    yhteys.close()
+
+def alv_laskelma():
+    yhteys = sqlite3.connect("kirjanpito.db")
+    kursori = yhteys.cursor()
+    print("\n=== ALV-LASKELMA ===")
+    print("-" * 60)
+
+    # Myynti-ALV
+    myynti_alv = kursori.execute("""
+        SELECT SUM((ta.kredit - ta.debet) * ta.alv_prosentti / (100 + ta.alv_prosentti))
+        FROM tapahtumat ta
+        WHERE ta.alv_koodi = 'myynti'
+    """).fetchone()[0] or 0
+
+    # Osto-ALV
+    osto_alv = kursori.execute("""
+        SELECT SUM((ta.debet - ta.kredit) * ta.alv_prosentti / (100 + ta.alv_prosentti))
+        FROM tapahtumat ta
+        WHERE ta.alv_koodi = 'osto'
+    """).fetchone()[0] or 0
+
+    tilitettava = myynti_alv - osto_alv
+
+    print(f"{'Myynti-ALV (vero myynneistä)':45} {myynti_alv:>12.2f}")
+    print(f"{'Osto-ALV (vähennettävä)':45} {osto_alv:>12.2f}")
+    print("-" * 60)
+    if tilitettava >= 0:
+        print(f"{'TILITETTÄVÄ ALV OmaVeroon':45} {tilitettava:>12.2f}")
+    else:
+        print(f"{'ALV-PALAUTUS (negatiivinen = palautus)':45} {tilitettava:>12.2f}")
+    yhteys.close()
+
+def valikko():
+    luo_tietokanta()
+    while True:
+        print("\n=== KIRJANPITO-OHJELMA ===")
+        print("1. Kirjaa tosite")
+        print("2. Näytä tilikartta")
+        print("3. Näytä päiväkirja")
+        print("4. Tuloslaskelma")
+        print("5. Tase")
+        print("6. ALV-laskelma")
+        print("0. Lopeta")
+        valinta = input("Valinta: ")
+        if valinta == "1":
+            kirjaa_tosite()
+        elif valinta == "2":
+            nayta_tilit()
+        elif valinta == "3":
+            nayta_paivakirja()
+        elif valinta == "4":
+            tuloslaskelma()
+        elif valinta == "5":
+            tase()
+        elif valinta == "6":
+            alv_laskelma()
+        elif valinta == "0":
+            print("Heippa!")
+            break
+        else:
+            print("Tuntematon valinta!")
+
+valikko()

@@ -1,0 +1,849 @@
+from flask import Flask, render_template, request, redirect, url_for, flash, send_from_directory
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user
+from werkzeug.security import generate_password_hash, check_password_hash
+import sqlite3
+import os
+
+app = Flask(__name__)
+app.secret_key = "kirjanpito_salainen_avain_2025"
+
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = "kirjaudu"
+
+class Kayttaja(UserMixin):
+    def __init__(self, id, tunnus):
+        self.id = id
+        self.tunnus = tunnus
+
+@login_manager.user_loader
+def load_user(user_id):
+    yhteys = get_db()
+    kayttaja = yhteys.execute("SELECT * FROM kayttajat WHERE id = ?", (user_id,)).fetchone()
+    yhteys.close()
+    if kayttaja:
+        return Kayttaja(kayttaja["id"], kayttaja["tunnus"])
+    return None
+
+import os
+from werkzeug.utils import secure_filename
+
+UPLOAD_FOLDER = 'static/liitteet'
+SALLITUT_TYYPIT = {'pdf', 'png', 'jpg', 'jpeg'}
+
+def sallittu_tiedosto(nimi):
+    return '.' in nimi and nimi.rsplit('.', 1)[1].lower() in SALLITUT_TYYPIT
+
+def get_db():
+    yhteys = sqlite3.connect("kirjanpito.db")
+    yhteys.row_factory = sqlite3.Row
+    return yhteys
+
+def muuta_summa(arvo):
+    return float(str(arvo).replace(",", "."))
+
+def muuta_paivamaara(pvm):
+    pvm = pvm.strip()
+    for erotin in [".", "/"]:
+        if erotin in pvm:
+            osat = pvm.split(erotin)
+            if len(osat) == 3 and len(osat[2]) == 4:
+                return f"{osat[2]}-{osat[1].zfill(2)}-{osat[0].zfill(2)}"
+    return pvm
+
+def nayta_paivamaara(pvm):
+    if pvm and len(pvm) == 10 and pvm[4] == "-":
+        return f"{pvm[8:10]}.{pvm[5:7]}.{pvm[0:4]}"
+    return pvm
+
+def luo_tietokanta():
+    yhteys = get_db()
+    kursori = yhteys.cursor()
+    kursori.execute("""
+        CREATE TABLE IF NOT EXISTS asetukset (
+            id INTEGER PRIMARY KEY,
+            yritys_nimi TEXT,
+            ytunnus TEXT,
+            osoite TEXT,
+            postiosoite TEXT,
+            puhelin TEXT,
+            tyontekija_nimi TEXT,
+            tyontekija_osoite TEXT,
+            tyontekija_postiosoite TEXT,
+            verotuskunta TEXT,
+            nimike TEXT,
+            tyosuhde_alkoi TEXT,
+            hetu TEXT,
+            iban TEXT,
+            bic TEXT
+        )
+    """)
+
+    kursori.execute("""
+        CREATE TABLE IF NOT EXISTS verokortti (
+            id INTEGER PRIMARY KEY,
+            perus_pros TEXT,
+            lisa_pros TEXT,
+            tuloraja TEXT,
+            sotumaksu TEXT
+        )
+    """)
+    kursori.execute("""
+        CREATE TABLE IF NOT EXISTS kayttajat (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tunnus TEXT UNIQUE NOT NULL,
+            salasana TEXT NOT NULL
+        )
+    """)
+
+    kursori.execute("""
+        CREATE TABLE IF NOT EXISTS tilit (
+            numero TEXT PRIMARY KEY,
+            nimi TEXT NOT NULL,
+            tyyppi TEXT NOT NULL
+        )
+    """)
+
+    kursori.execute("""
+        CREATE TABLE IF NOT EXISTS tositteet (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paivamaara TEXT NOT NULL,
+            kuvaus TEXT NOT NULL
+        )
+    """)
+
+    kursori.execute("""
+        CREATE TABLE IF NOT EXISTS tapahtumat (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tosite_id INTEGER NOT NULL,
+            tili_numero TEXT NOT NULL,
+            debet REAL DEFAULT 0,
+            kredit REAL DEFAULT 0,
+            alv_prosentti REAL DEFAULT 0,
+            alv_koodi TEXT DEFAULT 'ei',
+            FOREIGN KEY (tosite_id) REFERENCES tositteet(id),
+            FOREIGN KEY (tili_numero) REFERENCES tilit(numero)
+        )
+    """)
+
+    maara = kursori.execute("SELECT COUNT(*) FROM tilit").fetchone()[0]
+    if maara == 0:
+        tilit = [
+            ("1201", "Kalusto ja muu irtain", "vastaavaa"),
+            ("1701", "Myyntisaamiset", "vastaavaa"),
+            ("1762", "Verotilisaamiset", "vastaavaa"),
+            ("1819", "Muut menoennakot", "vastaavaa"),
+            ("1910", "Osuuspankki", "vastaavaa"),
+            ("2001", "Osakepääoma", "vastattavaa"),
+            ("2251", "Edellisten tilikausien voitto", "vastattavaa"),
+            ("2871", "Ostovelat", "vastattavaa"),
+            ("292040", "Arvonlisäverovelka", "vastattavaa"),
+            ("2921", "Ennakonpidätysvelka", "vastattavaa"),
+            ("2923", "Sosiaaliturvamaksuvelka", "vastattavaa"),
+            ("3000", "Myynti", "tulo"),
+            ("5010", "Kuukausipalkat", "kulu"),
+            ("5440", "Muut luontoisedut", "kulu"),
+            ("5990", "Luontoisetujen vastatili", "kulu"),
+            ("6100", "YEL-maksut", "kulu"),
+            ("6300", "Sosiaaliturvamaksut", "kulu"),
+            ("6500", "Henkilövakuutusmaksut", "kulu"),
+            ("6870", "Poisto koneista ja kalustosta", "kulu"),
+            ("7050", "Työterveyshuolto", "kulu"),
+            ("7120", "Työvaatteet", "kulu"),
+            ("7230", "Toimitilavuokrat", "kulu"),
+            ("7680", "Atk-laitehankinnat", "kulu"),
+            ("7730", "Kone- ja kalustohuolto", "kulu"),
+            ("7740", "Kone- ja kalustohankinnat", "kulu"),
+            ("7870", "Kilometrikorvaukset", "kulu"),
+            ("8380", "Taloushallintopalvelut", "kulu"),
+            ("8500", "Puhelinkulut", "kulu"),
+            ("8510", "Matkapuhelinkulut", "kulu"),
+            ("8530", "Datasiirto ja internet", "kulu"),
+            ("8560", "Rahaliikenteen kulut", "kulu"),
+            ("8570", "Pyöristyserot", "kulu"),
+            ("8580", "Vastuuvakuutukset", "kulu"),
+            ("8620", "Toimistotarvikkeet", "kulu"),
+            ("9240", "Palautuskorko", "tulo"),
+            ("9490", "Korkokulut ostoveloista", "kulu"),
+            ("9530", "Maksettava yhteisökorko", "kulu"),
+            ("9540", "Verojen viivästysseuraamukset", "kulu"),
+        ]
+        kursori.executemany("INSERT INTO tilit (numero, nimi, tyyppi) VALUES (?, ?, ?)", tilit)
+
+    kayttajia = kursori.execute("SELECT COUNT(*) FROM kayttajat").fetchone()[0]
+    if kayttajia == 0:
+        salasana_hash = generate_password_hash("admin123")
+        kursori.execute("INSERT INTO kayttajat (tunnus, salasana) VALUES (?, ?)",
+                       ("admin", salasana_hash))
+        print("Oletuskäyttäjä luotu: admin / admin123")
+
+    yhteys.commit()
+    yhteys.close()
+
+@app.route("/kirjaudu", methods=["GET", "POST"])
+def kirjaudu():
+    if request.method == "POST":
+        tunnus = request.form["tunnus"]
+        salasana = request.form["salasana"]
+        yhteys = get_db()
+        kayttaja = yhteys.execute("SELECT * FROM kayttajat WHERE tunnus = ?", (tunnus,)).fetchone()
+        yhteys.close()
+        if kayttaja and check_password_hash(kayttaja["salasana"], salasana):
+            login_user(Kayttaja(kayttaja["id"], kayttaja["tunnus"]))
+            return redirect(url_for("etusivu"))
+        flash("Väärä tunnus tai salasana!")
+    return render_template("kirjaudu.html")
+
+@app.route("/kirjaudu_ulos")
+@login_required
+def kirjaudu_ulos():
+    logout_user()
+    return redirect(url_for("kirjaudu"))
+
+@app.route("/")
+@login_required
+def etusivu():
+    yhteys = get_db()
+    tositteet = yhteys.execute("""
+        SELECT t.id, t.paivamaara, t.kuvaus, t.liite, t.tila,
+               SUM(ta.debet) as summa
+        FROM tositteet t
+        JOIN tapahtumat ta ON t.id = ta.tosite_id
+        GROUP BY t.id
+        ORDER BY t.paivamaara DESC
+    """).fetchall()
+
+    # Avoimet myyntilaskut
+    avoimet_myynti = yhteys.execute("""
+        SELECT t.id, t.paivamaara, t.kuvaus, ta.debet as summa
+        FROM tositteet t
+        JOIN tapahtumat ta ON t.id = ta.tosite_id
+        WHERE ta.tili_numero = '1701'
+        AND t.tila = 'avoin'
+        AND ta.debet > 0
+        ORDER BY t.paivamaara
+    """).fetchall()
+
+    # Avoimet ostolaskut
+    avoimet_osto = yhteys.execute("""
+        SELECT t.id, t.paivamaara, t.kuvaus, ta.kredit as summa
+        FROM tositteet t
+        JOIN tapahtumat ta ON t.id = ta.tosite_id
+        WHERE ta.tili_numero = '2871'
+        AND t.tila = 'avoin'
+        AND ta.kredit > 0
+        ORDER BY t.paivamaara
+    """).fetchall()
+
+    yhteys.close()
+    return render_template("index.html", tositteet=tositteet,
+                          avoimet_myynti=avoimet_myynti,
+                          avoimet_osto=avoimet_osto,
+                          nayta_paivamaara=nayta_paivamaara)
+
+@app.route("/uusi_tosite", methods=["GET", "POST"])
+@login_required
+def uusi_tosite():
+    if request.method == "POST":
+        paivamaara = muuta_paivamaara(request.form["paivamaara"])
+        kuvaus = request.form["kuvaus"]
+        tapahtumatyyppi = request.form["tapahtumatyyppi"]
+
+        yhteys = get_db()
+        kursori = yhteys.cursor()
+        kursori.execute("INSERT INTO tositteet (paivamaara, kuvaus) VALUES (?, ?)", (paivamaara, kuvaus))
+        tosite_id = kursori.lastrowid
+
+        if tapahtumatyyppi == "myyntilasku":
+            summa = muuta_summa(request.form["summa"])
+            alv = muuta_summa(request.form["alv"])
+            kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                           (tosite_id, "1701", summa, 0, "ei", 0))
+            kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                           (tosite_id, "3000", 0, summa, "myynti", alv))
+
+        elif tapahtumatyyppi == "ostolasku":
+            summa = muuta_summa(request.form["summa"])
+            alv = muuta_summa(request.form["alv"])
+            kulutili = request.form["kulutili"]
+            kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                           (tosite_id, kulutili, summa, 0, "osto", alv))
+            kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                           (tosite_id, "2871", 0, summa, "ei", 0))
+
+        elif tapahtumatyyppi == "palkka":
+            summa = muuta_summa(request.form["summa"])
+            kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                           (tosite_id, "5010", summa, 0, "ei", 0))
+            kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                           (tosite_id, "1910", 0, summa, "ei", 0))
+
+        elif tapahtumatyyppi == "maksu":
+            summa = muuta_summa(request.form["summa"])
+            kulutili = request.form["kulutili"]
+            kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                           (tosite_id, kulutili, summa, 0, "ei", 0))
+            kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                           (tosite_id, "1910", 0, summa, "ei", 0))
+
+        elif tapahtumatyyppi == "muu":
+            tilit = request.form.getlist("tili")
+            debet_lista = request.form.getlist("debet")
+            kredit_lista = request.form.getlist("kredit")
+            for i in range(len(tilit)):
+                if tilit[i]:
+                    debet = muuta_summa(debet_lista[i] or 0)
+                    kredit = muuta_summa(kredit_lista[i] or 0)
+                    if debet > 0 or kredit > 0:
+                        kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                                       (tosite_id, tilit[i], debet, kredit, "ei", 0))
+        # Tallennetaan liite jos on
+        liite_nimi = None
+        if "liite" in request.files:
+            tiedosto = request.files["liite"]
+            if tiedosto and tiedosto.filename and sallittu_tiedosto(tiedosto.filename):
+                liite_nimi = secure_filename(f"{tosite_id}_{tiedosto.filename}")
+                tiedosto.save(os.path.join(UPLOAD_FOLDER, liite_nimi))
+                kursori.execute("UPDATE tositteet SET liite=? WHERE id=?", (liite_nimi, tosite_id))
+        yhteys.commit()
+        yhteys.close()
+        return redirect(url_for("etusivu"))
+        return redirect(url_for("etusivu"))
+
+    yhteys = get_db()
+    tilit_lista = yhteys.execute("SELECT * FROM tilit ORDER BY numero").fetchall()
+    tilit_json = [{"numero": t["numero"], "nimi": t["nimi"]} for t in tilit_lista]
+    yhteys.close()
+    return render_template("uusi_tosite.html", tilit=tilit_lista, tilit_json=tilit_json)
+
+@app.route("/poista_tosite/<int:tosite_id>", methods=["POST"])
+@login_required
+def poista_tosite(tosite_id):
+    yhteys = get_db()
+    yhteys.execute("DELETE FROM tapahtumat WHERE tosite_id = ?", (tosite_id,))
+    yhteys.execute("DELETE FROM tositteet WHERE id = ?", (tosite_id,))
+    yhteys.commit()
+    yhteys.close()
+    return redirect(url_for("etusivu"))
+
+@app.route("/tuloslaskelma")
+@login_required
+def tuloslaskelma():
+    alku = request.args.get("alku", "")
+    loppu = request.args.get("loppu", "")
+    yhteys = get_db()
+
+    ehto = ""
+    if alku and loppu:
+        ehto = f"AND t.paivamaara BETWEEN '{alku}' AND '{loppu}'"
+
+    tulot = yhteys.execute(f"""
+        SELECT ti.numero, ti.nimi, SUM(ta.kredit) - SUM(ta.debet) as summa
+        FROM tilit ti
+        JOIN tapahtumat ta ON ti.numero = ta.tili_numero
+        JOIN tositteet t ON ta.tosite_id = t.id
+        WHERE ti.tyyppi = 'tulo' {ehto}
+        GROUP BY ti.numero, ti.nimi
+        ORDER BY ti.numero
+    """).fetchall()
+
+    kulut = yhteys.execute(f"""
+        SELECT ti.numero, ti.nimi, SUM(ta.debet) - SUM(ta.kredit) as summa
+        FROM tilit ti
+        JOIN tapahtumat ta ON ti.numero = ta.tili_numero
+        JOIN tositteet t ON ta.tosite_id = t.id
+        WHERE ti.tyyppi = 'kulu' {ehto}
+        GROUP BY ti.numero, ti.nimi
+        ORDER BY ti.numero
+    """).fetchall()
+
+    yhteys.close()
+    liikevaihto = sum(r["summa"] for r in tulot if r["numero"] == "3000")
+    kuluyhteensa = sum(r["summa"] for r in kulut if r["summa"] > 0)
+    rahoitus = sum(r["summa"] for r in tulot if r["numero"] != "3000")
+    voitto = liikevaihto - kuluyhteensa + rahoitus
+
+    return render_template("tuloslaskelma.html", tulot=tulot, kulut=kulut,
+                          liikevaihto=liikevaihto, kuluyhteensa=kuluyhteensa,
+                          rahoitus=rahoitus, voitto=voitto, alku=alku, loppu=loppu)
+
+@app.route("/tase")
+@login_required
+def tase():
+    pvm_raw = request.args.get("pvm", "")
+    pvm = muuta_paivamaara(pvm_raw) if pvm_raw else ""
+    
+    yhteys = get_db()
+    ehto = f"AND t.paivamaara <= '{pvm}'" if pvm else ""
+
+    # Haetaan kaikki tilit saldoineen ryhmiteltynä
+    tilit = yhteys.execute(f"""
+        SELECT ti.numero, ti.nimi, ti.tyyppi, ti.ryhma, ti.alaryhma,
+               CASE 
+                   WHEN ti.tyyppi = 'vastaavaa' THEN SUM(ta.debet) - SUM(ta.kredit)
+                   ELSE SUM(ta.kredit) - SUM(ta.debet)
+               END as saldo
+        FROM tilit ti
+        JOIN tapahtumat ta ON ti.numero = ta.tili_numero
+        JOIN tositteet t ON ta.tosite_id = t.id
+        WHERE ti.tyyppi IN ('vastaavaa', 'vastattavaa') {ehto}
+        GROUP BY ti.numero, ti.nimi, ti.tyyppi, ti.ryhma, ti.alaryhma
+        ORDER BY ti.numero
+    """).fetchall()
+
+    # Rakennetaan hierarkkinen rakenne
+    vastaavaa = {}
+    vastattavaa = {}
+
+    for tili in tilit:
+        ryhma = tili["ryhma"] or "Muut"
+        alaryhma = tili["alaryhma"] or "Muut"
+        saldo = tili["saldo"] or 0
+
+        if tili["tyyppi"] == "vastaavaa":
+            if ryhma not in vastaavaa:
+                vastaavaa[ryhma] = {}
+            if alaryhma not in vastaavaa[ryhma]:
+                vastaavaa[ryhma][alaryhma] = []
+            vastaavaa[ryhma][alaryhma].append({
+                "numero": tili["numero"],
+                "nimi": tili["nimi"],
+                "saldo": saldo
+            })
+        else:
+            if ryhma not in vastattavaa:
+                vastattavaa[ryhma] = {}
+            if alaryhma not in vastattavaa[ryhma]:
+                vastattavaa[ryhma][alaryhma] = []
+            vastattavaa[ryhma][alaryhma].append({
+                "numero": tili["numero"],
+                "nimi": tili["nimi"],
+                "saldo": saldo
+            })
+
+    # Lasketaan tilikauden tulos
+    tulos_tulo = yhteys.execute(f"""
+        SELECT COALESCE(SUM(ta.kredit) - SUM(ta.debet), 0)
+        FROM tilit ti
+        JOIN tapahtumat ta ON ti.numero = ta.tili_numero
+        JOIN tositteet t ON ta.tosite_id = t.id
+        WHERE ti.tyyppi = 'tulo' {ehto}
+    """).fetchone()[0] or 0
+
+    tulos_kulu = yhteys.execute(f"""
+        SELECT COALESCE(SUM(ta.debet) - SUM(ta.kredit), 0)
+        FROM tilit ti
+        JOIN tapahtumat ta ON ti.numero = ta.tili_numero
+        JOIN tositteet t ON ta.tosite_id = t.id
+        WHERE ti.tyyppi = 'kulu' {ehto}
+    """).fetchone()[0] or 0
+
+    yhteys.close()
+
+    tilikauden_tulos = tulos_tulo - tulos_kulu
+    vastaavaa_yht = sum(
+        t["saldo"] for ryhma in vastaavaa.values()
+        for alaryhma in ryhma.values()
+        for t in alaryhma
+    )
+    vastattavaa_yht = sum(
+        t["saldo"] for ryhma in vastattavaa.values()
+        for alaryhma in ryhma.values()
+        for t in alaryhma
+    ) + tilikauden_tulos
+    tasmaa = round(vastaavaa_yht, 2) == round(vastattavaa_yht, 2)
+
+    return render_template("tase.html",
+                          vastaavaa=vastaavaa,
+                          vastattavaa=vastattavaa,
+                          tilikauden_tulos=tilikauden_tulos,
+                          vastaavaa_yht=vastaavaa_yht,
+                          vastattavaa_yht=vastattavaa_yht,
+                          tasmaa=tasmaa,
+                          pvm=pvm_raw)
+
+@app.route("/alv")
+@login_required
+def alv():
+    alku = request.args.get("alku", "")
+    loppu = request.args.get("loppu", "")
+    yhteys = get_db()
+
+    ehto = ""
+    if alku and loppu:
+        ehto = f"AND t.paivamaara BETWEEN '{alku}' AND '{loppu}'"
+
+    myynti_alv = yhteys.execute(f"""
+        SELECT SUM((ta.kredit - ta.debet) * ta.alv_prosentti / (100 + ta.alv_prosentti))
+        FROM tapahtumat ta
+        JOIN tositteet t ON ta.tosite_id = t.id
+        WHERE ta.alv_koodi = 'myynti' {ehto}
+    """).fetchone()[0] or 0
+
+    osto_alv = yhteys.execute(f"""
+        SELECT SUM((ta.debet - ta.kredit) * ta.alv_prosentti / (100 + ta.alv_prosentti))
+        FROM tapahtumat ta
+        JOIN tositteet t ON ta.tosite_id = t.id
+        WHERE ta.alv_koodi = 'osto' {ehto}
+    """).fetchone()[0] or 0
+
+    yhteys.close()
+    tilitettava = myynti_alv - osto_alv
+    return render_template("alv.html", myynti_alv=myynti_alv, osto_alv=osto_alv,
+                          tilitettava=tilitettava, alku=alku, loppu=loppu)
+
+@app.route("/verokortti", methods=["GET", "POST"])
+@login_required
+def verokortti():
+    yhteys = get_db()
+    kursori = yhteys.cursor()
+    
+    kursori.execute("""
+        CREATE TABLE IF NOT EXISTS verokortti (
+            id INTEGER PRIMARY KEY,
+            perus_pros TEXT,
+            lisa_pros TEXT,
+            tuloraja TEXT,
+            sotumaksu TEXT
+        )
+    """)
+    yhteys.commit()
+
+    tallennettu = False
+    if request.method == "POST":
+        perus = request.form["perus_pros"]
+        lisa = request.form["lisa_pros"]
+        tuloraja = request.form["tuloraja"]
+        sotumaksu = request.form["sotumaksu"]
+        
+        olemassa = kursori.execute("SELECT COUNT(*) FROM verokortti").fetchone()[0]
+        if olemassa:
+            kursori.execute("UPDATE verokortti SET perus_pros=?, lisa_pros=?, tuloraja=?, sotumaksu=? WHERE id=1",
+                          (perus, lisa, tuloraja, sotumaksu))
+        else:
+            kursori.execute("INSERT INTO verokortti (id, perus_pros, lisa_pros, tuloraja, sotumaksu) VALUES (1,?,?,?,?)",
+                          (perus, lisa, tuloraja, sotumaksu))
+        yhteys.commit()
+        tallennettu = True
+
+    verokortti_tiedot = yhteys.execute("SELECT * FROM verokortti WHERE id=1").fetchone()
+    yhteys.close()
+    return render_template("verokortti.html", verokortti=verokortti_tiedot, tallennettu=tallennettu)
+
+@app.route("/palkka", methods=["GET", "POST"])
+@login_required
+def palkka():
+    yhteys = get_db()
+    
+    try:
+        verokortti_tiedot = yhteys.execute("SELECT * FROM verokortti WHERE id=1").fetchone()
+    except:
+        verokortti_tiedot = None
+
+    laskelma = None
+    tallennettu = False
+    virhe = None
+
+    if request.method == "POST" and verokortti_tiedot:
+        paivamaara = muuta_paivamaara(request.form["paivamaara"])
+        palkkajakso = request.form["palkkajakso"]
+        nettopalkka = muuta_summa(request.form["nettopalkka"])
+        # Lasketaan kertynyt palkka automaattisesti kuluvan vuoden alusta
+        vuosi = paivamaara[:4]
+        kertynyt = yhteys.execute("""
+            SELECT COALESCE(SUM(ta.debet), 0)
+            FROM tapahtumat ta
+            JOIN tositteet t ON ta.tosite_id = t.id
+            WHERE ta.tili_numero = '5010'
+            AND t.paivamaara LIKE ?
+        """, (f"{vuosi}%",)).fetchone()[0]
+
+        perus_pros = muuta_summa(verokortti_tiedot["perus_pros"])
+        lisa_pros = muuta_summa(verokortti_tiedot["lisa_pros"])
+        tuloraja = muuta_summa(verokortti_tiedot["tuloraja"])
+        sotumaksu_pros = muuta_summa(verokortti_tiedot["sotumaksu"])
+
+        # Valitaan veroprosentti kertyneen palkan perusteella
+        if kertynyt < tuloraja:
+            veroprosentti = perus_pros
+        else:
+            veroprosentti = lisa_pros
+
+        # Lasketaan bruttopalkka nettopalkasta
+        # netto = brutto - brutto * veroprosentti/100 - brutto * sotumaksu/100
+        # netto = brutto * (1 - veroprosentti/100 - sotumaksu/100)
+        kerroin = 1 - (veroprosentti / 100) - (sotumaksu_pros / 100)
+        brutto = round(nettopalkka / kerroin, 2)
+        ennakonpidatys = round(brutto * veroprosentti / 100, 2)
+        sotumaksu = round(brutto * sotumaksu_pros / 100, 2)
+        netto_tarkistettu = round(brutto - ennakonpidatys - sotumaksu, 2)
+
+      # Lasketaan kumulatiiviset vuosiluvut
+        kum_brutto = kertynyt + brutto
+        kum_ennakonpidatys = yhteys.execute("""
+            SELECT COALESCE(SUM(ta.kredit), 0)
+            FROM tapahtumat ta
+            JOIN tositteet t ON ta.tosite_id = t.id
+            WHERE ta.tili_numero = '2921'
+            AND t.paivamaara LIKE ?
+        """, (f"{vuosi}%",)).fetchone()[0] + ennakonpidatys
+        kum_netto = yhteys.execute("""
+            SELECT COALESCE(SUM(ta.kredit), 0)
+            FROM tapahtumat ta
+            JOIN tositteet t ON ta.tosite_id = t.id
+            WHERE ta.tili_numero = '1910'
+            AND t.kuvaus LIKE 'Palkka%'
+            AND t.paivamaara LIKE ?
+        """, (f"{vuosi}%",)).fetchone()[0] + netto_tarkistettu
+
+        laskelma = {
+            "brutto": brutto,
+            "ennakonpidatys": ennakonpidatys,
+            "sotumaksu": sotumaksu,
+            "netto": netto_tarkistettu,
+            "veroprosentti": str(veroprosentti).replace(".", ","),
+            "kum_brutto": kum_brutto,
+            "kum_ennakonpidatys": kum_ennakonpidatys,
+            "kum_netto": kum_netto
+        }
+
+        # Kirjataan kirjanpitoon
+        kursori = yhteys.cursor()
+        kuvaus = f"Palkka {palkkajakso}"
+        kursori.execute("INSERT INTO tositteet (paivamaara, kuvaus) VALUES (?, ?)", (paivamaara, kuvaus))
+        tosite_id = kursori.lastrowid
+
+        # Bruttopalkka kuluksi
+        kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                       (tosite_id, "5010", brutto, 0, "ei", 0))
+        # Ennakonpidätysvelka
+        kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                       (tosite_id, "2921", 0, ennakonpidatys, "ei", 0))
+        # Sosiaaliturvamaksuvelka
+        kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                       (tosite_id, "2923", 0, sotumaksu, "ei", 0))
+        # Nettopalkka pankkitililtä
+        kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                       (tosite_id, "1910", 0, netto_tarkistettu, "ei", 0))
+
+        # Palkka merkitään heti maksetuksi (nettopalkka lähtee automaattisesti)
+        # Verot jäävät avoimiksi kunnes tilitetään OmaVeroon
+        kursori.execute("UPDATE tositteet SET tila='maksettu' WHERE id=?", (tosite_id,))
+
+        yhteys.commit()
+        tallennettu = True
+
+    yhteys.close()
+    return render_template("palkkalaskelma.html", verokortti=verokortti_tiedot,
+                          laskelma=None, tallennettu=False, virhe=None)
+
+@app.route("/asetukset", methods=["GET", "POST"])
+@login_required
+def asetukset():
+    yhteys = get_db()
+    kursori = yhteys.cursor()
+    
+    kursori.execute("""
+        CREATE TABLE IF NOT EXISTS asetukset (
+            id INTEGER PRIMARY KEY,
+            yritys_nimi TEXT,
+            ytunnus TEXT,
+            osoite TEXT,
+            postiosoite TEXT,
+            puhelin TEXT,
+            tyontekija_nimi TEXT,
+            tyontekija_osoite TEXT,
+            tyontekija_postiosoite TEXT,
+            verotuskunta TEXT,
+            nimike TEXT,
+            tyosuhde_alkoi TEXT,
+            hetu TEXT,
+            iban TEXT,
+            bic TEXT
+        )
+    """)
+    yhteys.commit()
+
+    tallennettu = False
+    if request.method == "POST":
+        kentat = ["yritys_nimi", "ytunnus", "osoite", "postiosoite", "puhelin",
+                 "tyontekija_nimi", "tyontekija_osoite", "tyontekija_postiosoite",
+                 "verotuskunta", "nimike", "tyosuhde_alkoi", "hetu", "iban", "bic"]
+        arvot = [request.form.get(k, "") for k in kentat]
+        
+        olemassa = kursori.execute("SELECT COUNT(*) FROM asetukset").fetchone()[0]
+        if olemassa:
+            kursori.execute("""
+                UPDATE asetukset SET yritys_nimi=?, ytunnus=?, osoite=?, postiosoite=?,
+                puhelin=?, tyontekija_nimi=?, tyontekija_osoite=?, tyontekija_postiosoite=?,
+                verotuskunta=?, nimike=?, tyosuhde_alkoi=?, hetu=?, iban=?, bic=?
+                WHERE id=1
+            """, arvot)
+        else:
+            kursori.execute("""
+                INSERT INTO asetukset (id, yritys_nimi, ytunnus, osoite, postiosoite,
+                puhelin, tyontekija_nimi, tyontekija_osoite, tyontekija_postiosoite,
+                verotuskunta, nimike, tyosuhde_alkoi, hetu, iban, bic)
+                VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, arvot)
+        yhteys.commit()
+        tallennettu = True
+
+    a = yhteys.execute("SELECT * FROM asetukset WHERE id=1").fetchone()
+    yhteys.close()
+    return render_template("asetukset.html", a=a, tallennettu=tallennettu)
+
+@app.route("/palkkakuitti/<int:tosite_id>")
+@login_required
+def palkkakuitti(tosite_id):
+    yhteys = get_db()
+    
+    tosite = yhteys.execute("SELECT * FROM tositteet WHERE id=?", (tosite_id,)).fetchone()
+    tapahtumat = yhteys.execute("""
+        SELECT ta.*, ti.nimi 
+        FROM tapahtumat ta
+        JOIN tilit ti ON ta.tili_numero = ti.numero
+        WHERE ta.tosite_id=?
+    """, (tosite_id,)).fetchall()
+    
+    a = yhteys.execute("SELECT * FROM asetukset WHERE id=1").fetchone()
+    verokortti_tiedot = yhteys.execute("SELECT * FROM verokortti WHERE id=1").fetchone()
+
+    brutto = next((t["debet"] for t in tapahtumat if t["tili_numero"] == "5010"), 0)
+    ennakonpidatys = next((t["kredit"] for t in tapahtumat if t["tili_numero"] == "2921"), 0)
+    sotumaksu = next((t["kredit"] for t in tapahtumat if t["tili_numero"] == "2923"), 0)
+    netto = next((t["kredit"] for t in tapahtumat if t["tili_numero"] == "1910"), 0)
+
+    vuosi = tosite["paivamaara"][:4]
+    kum_brutto = yhteys.execute("""
+        SELECT COALESCE(SUM(ta.debet), 0)
+        FROM tapahtumat ta
+        JOIN tositteet t ON ta.tosite_id = t.id
+        WHERE ta.tili_numero = '5010'
+        AND t.paivamaara LIKE ?
+        AND t.id <= ?
+    """, (f"{vuosi}%", tosite_id)).fetchone()[0]
+
+    kum_ennakonpidatys = yhteys.execute("""
+        SELECT COALESCE(SUM(ta.kredit), 0)
+        FROM tapahtumat ta
+        JOIN tositteet t ON ta.tosite_id = t.id
+        WHERE ta.tili_numero = '2921'
+        AND t.paivamaara LIKE ?
+        AND t.id <= ?
+    """, (f"{vuosi}%", tosite_id)).fetchone()[0]
+
+    kum_netto = yhteys.execute("""
+        SELECT COALESCE(SUM(ta.kredit), 0)
+        FROM tapahtumat ta
+        JOIN tositteet t ON ta.tosite_id = t.id
+        WHERE ta.tili_numero = '1910'
+        AND t.kuvaus LIKE 'Palkka%'
+        AND t.paivamaara LIKE ?
+        AND t.id <= ?
+    """, (f"{vuosi}%", tosite_id)).fetchone()[0] or 0
+
+    yhteys.close()
+
+    laskelma = {
+        "brutto": brutto,
+        "ennakonpidatys": ennakonpidatys,
+        "sotumaksu": sotumaksu,
+        "netto": netto,
+        "kum_brutto": kum_brutto,
+        "kum_ennakonpidatys": kum_ennakonpidatys,
+        "kum_netto": kum_netto
+    }
+
+    return render_template("palkkakuitti.html", tosite=tosite, laskelma=laskelma,
+                          a=a, verokortti=verokortti_tiedot,
+                          nayta_paivamaara=nayta_paivamaara)
+
+@app.route("/liite/<nimi>")
+@login_required
+def liite(nimi):
+    return send_from_directory("static/liitteet", nimi)
+
+@app.route("/merkitse_maksetuksi/<int:tosite_id>", methods=["POST"])
+@login_required
+def merkitse_maksetuksi(tosite_id):
+    yhteys = get_db()
+    kursori = yhteys.cursor()
+    
+    # Haetaan tositteen tiedot
+    tosite = yhteys.execute("SELECT * FROM tositteet WHERE id=?", (tosite_id,)).fetchone()
+    tapahtumat = yhteys.execute("SELECT * FROM tapahtumat WHERE tosite_id=?", (tosite_id,)).fetchall()
+    
+    # Selvitetään onko myynti vai ostolasku
+    on_myyntilasku = any(t["tili_numero"] == "1701" for t in tapahtumat)
+    on_ostolasku = any(t["tili_numero"] == "2871" for t in tapahtumat)
+    
+    if on_myyntilasku:
+        # Myyntilaskun maksu: pankki debet, myyntisaamiset kredit
+        summa = next((t["debet"] for t in tapahtumat if t["tili_numero"] == "1701"), 0)
+        paivamaara = tosite["paivamaara"]
+        kursori.execute("INSERT INTO tositteet (paivamaara, kuvaus) VALUES (?, ?)",
+                       (paivamaara, f"Maksusuoritus - {tosite['kuvaus']}"))
+        maksu_id = kursori.lastrowid
+        kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                       (maksu_id, "1910", summa, 0, "ei", 0))
+        kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                       (maksu_id, "1701", 0, summa, "ei", 0))
+
+    elif on_ostolasku:
+        # Ostolaskun maksu: ostovelat debet, pankki kredit
+        summa = next((t["kredit"] for t in tapahtumat if t["tili_numero"] == "2871"), 0)
+        paivamaara = tosite["paivamaara"]
+        kursori.execute("INSERT INTO tositteet (paivamaara, kuvaus) VALUES (?, ?)",
+                       (paivamaara, f"Maksusuoritus - {tosite['kuvaus']}"))
+        maksu_id = kursori.lastrowid
+        kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                       (maksu_id, "2871", summa, 0, "ei", 0))
+        kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                       (maksu_id, "1910", 0, summa, "ei", 0))
+
+    # Merkitään alkuperäinen lasku maksetuksi
+    kursori.execute("UPDATE tositteet SET tila='maksettu' WHERE id=?", (tosite_id,))
+    yhteys.commit()
+    yhteys.close()
+    return redirect(url_for("etusivu"))    
+
+@app.route("/tilita_verot/<int:tosite_id>", methods=["POST"])
+@login_required
+def tilita_verot(tosite_id):
+    yhteys = get_db()
+    kursori = yhteys.cursor()
+
+    tosite = yhteys.execute("SELECT * FROM tositteet WHERE id=?", (tosite_id,)).fetchone()
+    tapahtumat = yhteys.execute("SELECT * FROM tapahtumat WHERE tosite_id=?", (tosite_id,)).fetchall()
+
+    ennakonpidatys = next((t["kredit"] for t in tapahtumat if t["tili_numero"] == "2921"), 0)
+    sotumaksu = next((t["kredit"] for t in tapahtumat if t["tili_numero"] == "2923"), 0)
+    yhteensa = ennakonpidatys + sotumaksu
+
+    if yhteensa > 0:
+        paivamaara = request.form.get("paivamaara", tosite["paivamaara"])
+        paivamaara = muuta_paivamaara(paivamaara)
+        kuvaus = f"Verojen tilitys OmaVeroon - {tosite['kuvaus']}"
+        kursori.execute("INSERT INTO tositteet (paivamaara, kuvaus, tila) VALUES (?, ?, ?)",
+                       (paivamaara, kuvaus, "maksettu"))
+        uusi_id = kursori.lastrowid
+
+        # Ennakonpidätysvelka pois
+        kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                       (uusi_id, "2921", ennakonpidatys, 0, "ei", 0))
+        # Sosiaaliturvamaksuvelka pois
+        kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                       (uusi_id, "2923", sotumaksu, 0, "ei", 0))
+        # Pankki kredit
+        kursori.execute("INSERT INTO tapahtumat (tosite_id, tili_numero, debet, kredit, alv_koodi, alv_prosentti) VALUES (?, ?, ?, ?, ?, ?)",
+                       (uusi_id, "1910", 0, yhteensa, "ei", 0))
+
+        yhteys.commit()
+
+    yhteys.close()
+    return redirect(url_for("etusivu"))
+
+if __name__ == "__main__":
+    luo_tietokanta()
+    app.run(debug=True)

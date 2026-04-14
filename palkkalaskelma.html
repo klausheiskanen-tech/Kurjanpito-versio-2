@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asetukset</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; }
+        .navbar { background: #2c3e50; color: white; padding: 15px 30px; display: flex; gap: 20px; align-items: center; }
+        .navbar a { color: white; text-decoration: none; padding: 8px 15px; border-radius: 4px; }
+        .navbar a:hover { background: #34495e; }
+        .container { max-width: 600px; margin: 30px auto; padding: 0 20px; }
+        h1 { color: #2c3e50; }
+        .btn { background: #2c3e50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; display: inline-block; }
+        .btn:hover { background: #34495e; }
+        .btn-green { background: #27ae60; }
+        .btn-green:hover { background: #219a52; }
+        input { padding: 10px; border: 1px solid #ddd; border-radius: 4px; width: 100%; box-sizing: border-box; font-size: 15px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; color: #2c3e50; }
+        .card { background: white; padding: 25px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .ok { background: #27ae60; color: white; padding: 10px; border-radius: 4px; margin-bottom: 20px; }
+        h2 { color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div class="navbar">
+        <strong>📒 Kirjanpito</strong>
+        <a href="/">Etusivu</a>
+        <a href="/uusi_tosite">+ Uusi tosite</a>
+        <a href="/palkka">Palkkalaskelma</a>
+        <a href="/verokortti">Verokortti</a>
+        <a href="/tuloslaskelma">Tuloslaskelma</a>
+        <a href="/tase">Tase</a>
+        <a href="/alv">ALV</a>
+        <a href="/asetukset">Asetukset</a>
+        <a href="/kirjaudu_ulos" style="margin-left: auto;">Kirjaudu ulos</a>
+    </div>
+    <div class="container">
+        <h1>Asetukset</h1>
+        {% if tallennettu %}
+        <div class="ok">✅ Tiedot tallennettu!</div>
+        {% endif %}
+        <form method="POST">
+            <div class="card">
+                <h2>Yrityksen tiedot</h2>
+                <div class="form-group">
+                    <label>Yrityksen nimi</label>
+                    <input type="text" name="yritys_nimi" value="{{ a.yritys_nimi if a else '' }}" placeholder="esim. LVI-Suunnittelu Heiskanen Oy">
+                </div>
+                <div class="form-group">
+                    <label>Y-tunnus</label>
+                    <input type="text" name="ytunnus" value="{{ a.ytunnus if a else '' }}" placeholder="esim. 2261208-3">
+                </div>
+                <div class="form-group">
+                    <label>Osoite</label>
+                    <input type="text" name="osoite" value="{{ a.osoite if a else '' }}" placeholder="esim. Lippajärventie 10 A 2">
+                </div>
+                <div class="form-group">
+                    <label>Postinumero ja kaupunki</label>
+                    <input type="text" name="postiosoite" value="{{ a.postiosoite if a else '' }}" placeholder="esim. 02940 ESPOO">
+                </div>
+                <div class="form-group">
+                    <label>Puhelin</label>
+                    <input type="text" name="puhelin" value="{{ a.puhelin if a else '' }}" placeholder="esim. 0505539693">
+                </div>
+            </div>
+            <div class="card">
+                <h2>Työntekijän tiedot</h2>
+                <div class="form-group">
+                    <label>Nimi</label>
+                    <input type="text" name="tyontekija_nimi" value="{{ a.tyontekija_nimi if a else '' }}" placeholder="esim. Heiskanen Mirkka Johanna">
+                </div>
+                <div class="form-group">
+                    <label>Osoite</label>
+                    <input type="text" name="tyontekija_osoite" value="{{ a.tyontekija_osoite if a else '' }}" placeholder="esim. Lippajärventie 10 A 2">
+                </div>
+                <div class="form-group">
+                    <label>Postinumero ja kaupunki</label>
+                    <input type="text" name="tyontekija_postiosoite" value="{{ a.tyontekija_postiosoite if a else '' }}" placeholder="esim. 02940 ESPOO">
+                </div>
+                <div class="form-group">
+                    <label>Verotuskunta</label>
+                    <input type="text" name="verotuskunta" value="{{ a.verotuskunta if a else '' }}" placeholder="esim. ESPOO">
+                </div>
+                <div class="form-group">
+                    <label>Tehtävänimike</label>
+                    <input type="text" name="nimike" value="{{ a.nimike if a else '' }}" placeholder="esim. toimitusjohtaja">
+                </div>
+                <div class="form-group">
+                    <label>Työsuhde alkoi</label>
+                    <input type="text" name="tyosuhde_alkoi" value="{{ a.tyosuhde_alkoi if a else '' }}" placeholder="esim. 20.3.2009">
+                </div>
+                <div class="form-group">
+                    <label>Henkilötunnus</label>
+                    <input type="text" name="hetu" value="{{ a.hetu if a else '' }}" placeholder="esim. 160878-112H">
+                </div>
+                <div class="form-group">
+                    <label>IBAN</label>
+                    <input type="text" name="iban" value="{{ a.iban if a else '' }}" placeholder="esim. FI12 3456 7890 1234 56">
+                </div>
+                <div class="form-group">
+                    <label>BIC</label>
+                    <input type="text" name="bic" value="{{ a.bic if a else '' }}" placeholder="esim. OKOYFIHH">
+                </div>
+            </div>
+            <button type="submit" class="btn btn-green">💾 Tallenna asetukset</button>
+        </form>
+    </div>
+</body>
+</html>
